@@ -1,123 +1,123 @@
 package me.criv.earthtether;
 
-import com.projectkorra.projectkorra.GeneralMethods;
 import com.projectkorra.projectkorra.ProjectKorra;
 import com.projectkorra.projectkorra.ability.AddonAbility;
-import com.projectkorra.projectkorra.ability.EarthAbility;;
+import com.projectkorra.projectkorra.ability.EarthAbility;
 import com.projectkorra.projectkorra.util.TempBlock;
 import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.block.Block;
+import org.bukkit.Sound;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.permissions.Permission;
 import org.bukkit.permissions.PermissionDefault;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+
+import static me.criv.earthtether.EarthTetherListener.*;
 
 public class EarthTether extends EarthAbility implements AddonAbility {
 
     private Location source;
+    private Entity target;
 
     private Listener listener;
     private Permission perm;
-    private final int sourceRange = 20;
     private final int range = 35;
-    private final long interval = 1;
-    ArrayList<TempBlock> tempBlocks = new ArrayList<>();
+    private final int interval = 1;
+    private final int increment = 3;
+    private final int delay = 5;
+    private long retractStart;
+    private Vector direction;
+    private Location location;
+    private List<Entity> entities = new ArrayList<>();
+    private ArrayList<TempBlock> tempBlocks = new ArrayList<>();
+    private Set<Long> extendTimings = new HashSet<>();
+    private ArrayList<Long> retractTimings = new ArrayList<>();
 
     public EarthTether(Player player, Location source) {
         super(player);
         this.source = source;
         this.player = player;
-            start();
+        if(!bPlayer.canBend(this)) return;
+        start();
     }
 
     @Override
     public void progress() {
-        if(EarthTetherListener.hasLeftClickOccurred()) {
-            EarthTetherListener.resetLeftClickOccured();
-
-            Entity target = checkForEntity(player.getEyeLocation(), player.getEyeLocation().getDirection());
-            if (source == null || target == null) {
-                remove();
-                return;
+        if (hasLeftClickOccurred()) {
+            resetLeftClickOccured();
+            long clickTime = getCurrentTick();
+            this.direction = player.getEyeLocation().getDirection().clone().normalize();
+            this.location = source.clone();
+            this.retractStart = clickTime + range * interval + delay;
+            for (int i = 0; i <= range; i++) {
+                extendTimings.add(clickTime + i * interval);
             }
-
-            player.sendMessage("we saw that click, we gonna start right now");
+            player.sendMessage(String.valueOf(clickTime + range * interval));
+            retractTimings.add(clickTime + range * interval);
             bPlayer.addCooldown(this);
-
-            createLine(target.getLocation(), source, source.getBlock().getType(), interval, target);
-            this.source = null;
-            remove();
         }
-        if (getStartTime() + 10000 < System.currentTimeMillis() && !EarthTetherListener.hasLeftClickOccurred()) {
-            player.sendMessage("time reset");
-            this.source = null;
-            remove();
-        }
-    }
+        if (extendTimings.contains(getCurrentTick())) {
+            for (int i = 0; i < increment; i++) {
+                location.add(direction);
+                //player.sendMessage("createline at " + i);
+                TempBlock tempBlock = new TempBlock(location.getBlock(), source.getBlock().getType());
+                tempBlock.setRevertTime(15000);
+                this.tempBlocks.add(tempBlock);
+                player.getWorld().playSound(location, Sound.BLOCK_DEEPSLATE_BRICKS_PLACE, 2F, 0.1F);
 
-    public Entity checkForEntity(Location location, Vector direction) {
-        List<Entity> entities = new ArrayList<>();
-        for (int i = 0; i < range; i++) {
-            location.add(direction);
-            entities.addAll(GeneralMethods.getEntitiesAroundPoint(location, 4)
-                    .stream()
-                    .filter(entity -> !entity.getUniqueId().equals(player.getUniqueId()))
-                    .toList());
-            if (!entities.isEmpty()) {
-                player.sendMessage("first entity detected thats not you, it was " + entities.get(0));
-                entities.get(0).setGlowing(true);
-                return entities.get(0);
-            }
-            player.sendMessage("tracking beam block #: " + i);
-        }
-        return null;
-    }
+                this.entities.addAll(location.getWorld().getNearbyEntities(location, 2, 1, 2)
+                        .stream()
+                        .sorted(Comparator.comparingDouble(entity -> entity.getLocation().distance(location)))
+                        .filter(entity -> !entity.getUniqueId().equals(player.getUniqueId()) && entity instanceof LivingEntity)
+                        .toList());
 
-    public void createLine(Location target, Location source, Material blockType, long interval, Entity entity) {
-
-        Vector direction = target.subtract(0,1,0).toVector().clone().subtract(source.toVector().clone()).normalize();
-        double targetDistance = source.distance(target);
-
-        for (int i = 0; i <= targetDistance; i++) {
-            Location location = source.clone().add(direction.clone().multiply(i));
-            int i1 = i;
-            new BukkitRunnable() {
-                public void run() {
-                    //if(location.getBlock().getType() != Material.AIR) return;
-                    player.sendMessage("createline at " + i1);
-                    TempBlock tempBlock = new TempBlock(location.getBlock(), source.getBlock().getType());
-                    tempBlock.setRevertTime(5000);
-                    tempBlocks.add(tempBlock);
-                    if(i1 >= targetDistance-1) {
-                        player.sendMessage("done now");
-                        retractLine(target, source, interval, entity);
-                    }
+                if (!this.entities.isEmpty()) {
+                    this.target = this.entities.get(0);
+                    extendTimings.clear();
+                    this.retractStart = getCurrentTick() + delay;
                 }
-            }.runTaskLater(ProjectKorra.plugin, interval * i);
+                if(location.distance(source) > range) {
+                    this.target = null;
+                    extendTimings.clear();
+                    this.retractStart = getCurrentTick() + delay;
+                }
+            }
         }
-    }
-
-    public void retractLine(Location target, Location source, long interval, Entity entity) {
-        double targetDistance = source.distance(target);
-
-        for (int i = 0; i <= targetDistance; i++) {
-            new BukkitRunnable() {
-                public void run() {
-                   player.sendMessage("starting revert..." + tempBlocks.size());
+        if(retractTimings.contains(getCurrentTick())) {
+            if (!tempBlocks.isEmpty()) {
+                for (int i = 0; i < increment; i++) {
+                    //player.sendMessage("starting revert..." + tempBlocks.size());
                     int last = tempBlocks.size() - 1;
-                    entity.teleport(tempBlocks.get(last).getLocation().add(0.5,1,0.5));
                     tempBlocks.get(last).revertBlock();
+                    player.getWorld().playSound(tempBlocks.get(last).getLocation(), Sound.BLOCK_DEEPSLATE_BRICKS_PLACE, 2F, 0.8F);
+                    //if (target == null) player.sendMessage("why null");
+                    if (target != null) {
+                        target.setVelocity(target.getLocation().toVector().clone().subtract(source.toVector().clone()).normalize().multiply(-this.increment));
+                        if (source.distance(target.getLocation()) < 2) target.setVelocity(new Vector(0, 0, 0));
+                        //entity.teleport(tempBlocks.get(last).getLocation().add(0.5, 0, 0.5));
+                    }
                     tempBlocks.remove(last);
                 }
-            }.runTaskLater(ProjectKorra.plugin, (10 + i * interval));
+            } else {
+                remove();
+            }
+        }
+        if (retractStart == getCurrentTick()) {
+            if (!tempBlocks.isEmpty()) {
+                for (int i = 0; i < tempBlocks.size(); i++) {
+                    retractTimings.add(getCurrentTick() + i * interval + delay);
+                }
+            }
+        }
+        if (getStartTime() + 10000 < System.currentTimeMillis() && !hasLeftClickOccurred()) {
+            player.sendMessage("time reset");
+            //this.source = null;
+            remove();
         }
     }
 
@@ -170,5 +170,10 @@ public class EarthTether extends EarthAbility implements AddonAbility {
     @Override
     public String getVersion() {
         return "1.0.0";
+    }
+
+    @Override
+    public String getDescription() {
+        return "EarthTether is an earth ability that allows earthbenders to pull down entities. Simply sneak to set the source point and left click to create the tether. The tether will pull nearby entities towards the source point.";
     }
 }
